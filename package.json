@@ -1,0 +1,17 @@
+{
+  "name": "cicd-demo-project",
+  "version": "1.0.0",
+  "description": "CI/CD 通用教程配套示例项目：零运行时依赖，node:test 内置测试，开箱即跑",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "node scripts/lint.mjs",
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
+    "build": "bash scripts/build.sh",
+    "deploy": "bash scripts/deploy.sh"
+  }
+}

@@ -1,0 +1,87 @@
+// =============================================================================
+// Jenkins 等价配置（对应教程 §4.2）
+// 使用方法：把本文件复制到目标仓库根目录，命名为 Jenkinsfile；
+//           Jenkins 需安装 Docker Pipeline 插件，并配置能用 docker 的 agent。
+//           多分支流水线（Multibranch Pipeline）会自动发现分支与 MR。
+//
+// 对照学习要点：
+//   触发器不写在文件里 → Multibranch + webhook 负责
+//   runs-on / image    → agent { docker 'node:20' }
+//   matrix             → matrix { axes { ... } }
+//   upload-artifact    → archiveArtifacts
+//   secrets            → Jenkins 凭据库 + withCredentials（生产部署时使用）
+//   缓存无内建         → 这里演示 npm ci 每次重装；生产可用持久卷/挂载缓存目录
+// =============================================================================
+pipeline {
+  agent none
+
+  options {
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  stages {
+    stage('Lint') {
+      agent { docker { image 'node:20' } }
+      steps {
+        checkout scm
+        sh 'npm ci'
+        sh 'npm run lint'
+      }
+    }
+
+    stage('Test Matrix') {
+      matrix {
+        axes {
+          axis { name 'NODE_VERSION'; values '20', '22' }
+        }
+        agent { docker { image "node:${NODE_VERSION}" } }
+        stages {
+          stage('Test') {
+            steps {
+              checkout scm
+              sh 'npm ci'
+              sh 'npm test'
+            }
+          }
+        }
+      }
+    }
+
+    stage('Build') {
+      agent { docker { image 'node:20' } }
+      when { branch 'main' }
+      steps {
+        checkout scm
+        sh 'npm ci'
+        sh 'npm run build'
+      }
+      post {
+        success { archiveArtifacts artifacts: 'dist/**', fingerprint: true }
+      }
+    }
+
+    stage('Deploy Staging') {
+      agent { docker { image 'node:20' } }
+      when {
+        beforeAgent true
+        branch 'main' // Multibranch 下分支构建；PR 构建由源分支策略另行控制
+      }
+      steps {
+        // 生产写法（需在 Jenkins 凭据库配置 deploy-token 凭据）：
+        // withCredentials([string(credentialsId: 'deploy-token', variable: 'DEPLOY_TOKEN')]) {
+        //   sh 'npm run deploy -- staging'
+        // }
+        sh '''
+          export DEPLOY_TOKEN="${DEPLOY_TOKEN:-ci-dry-run-token}"
+          npm run deploy -- staging
+        '''
+      }
+    }
+  }
+
+  post {
+    failure { echo "构建失败：${env.JOB_NAME} #${env.BUILD_NUMBER}" }
+    always { cleanWs() } // 一次性工作区，模拟托管 runner 的干净环境
+  }
+}

@@ -1,0 +1,30 @@
+# 对应教程练习 L7 / §3.11：可复用工作流（被调用方）
+# 教学点：把重复的测试逻辑收敛成一个版本化组件，其他仓库用 uses: 引用
+name: Reusable Test
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 使用的 Node 版本
+        type: number
+        required: true
+    secrets:
+      npm-token:
+        description: 可选的 npm token（本示例项目实际用不到，仅演示密钥透传）
+        required: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+        env:
+          NPM_TOKEN: ${{ secrets.npm-token }}

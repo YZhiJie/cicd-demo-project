@@ -1,0 +1,26 @@
+# 对应教程练习 L1：第一条流水线
+# 知识点：触发器 on / runs-on / steps / 上下文 github.*
+name: 01-Hello
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # 允许在 Actions 页面手动触发
+
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 打招呼
+        run: echo "Hello, CI/CD!"
+      - name: 认识内置上下文
+        run: |
+          echo "事件: ${{ github.event_name }}"
+          echo "分支: ${GITHUB_REF_NAME}"
+          echo "SHA : ${GITHUB_SHA}"
+          echo "触发者: ${{ github.actor }}"
+      - name: 看看运行环境
+        run: |
+          node --version
+          npm --version
+          pwd

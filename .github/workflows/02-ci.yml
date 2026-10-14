@@ -1,0 +1,106 @@
+# 对应教程练习 L2–L6 / §3.12：完整的 CI + 模拟 CD 主流水线
+# DAG：lint ┐┌ test(矩阵) → build → deploy-staging(仅 main 分支 push)
+#         coverage ┘
+name: 02-CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read # 最小权限原则（教程第 6 节）
+
+# 同一分支的新运行取消旧运行（省分钟数）；但 main 上的运行不取消，避免部署被打断
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # L2：静态检查
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm # L4：按 lockfile 自动缓存依赖
+      - run: npm ci
+      - run: npm run lint
+
+  # L3：多 Node 版本 × 多 OS 矩阵，单个组合失败不取消其他组合
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test # 跨平台命令（不依赖 bash），所以 Windows 也能跑
+
+  # L4/L5：覆盖率单独在 Linux 上跑（内置覆盖率输出文本报告），作为制品存档
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: 生成覆盖率报告
+        run: mkdir -p coverage && npm run test:coverage > coverage/coverage.txt
+      - uses: actions/upload-artifact@v4
+        if: always() # 即使覆盖率不达标也保留现场用于排查
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  # L5：构建并保存制品；必须等 lint/test/coverage 全绿
+  build:
+    needs: [lint, test, coverage]
+    runs-on: ubuntu-latest # build.sh 是 bash 脚本，固定 Linux runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # L6：仅 main 分支 push 后部署 staging
+  # 教学点：PR 构建不携带部署能力（CI/CD 分离）；密钥来自 environment secret
+  deploy-staging:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging # 在 Settings → Environments 可加保护规则/独立密钥
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载构建制品 # 跨 job 不共享文件系统，只能走 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: 部署（未配置 DEPLOY_TOKEN 时自动进入 dry-run）
+        run: npm run deploy -- staging
+        env:
+          # 真实使用：在 staging environment 中配置 DEPLOY_TOKEN
+          # 未配置时回落到演练令牌，保证示例项目开箱即绿（脚本会标注 dryRun）
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN || 'ci-dry-run-token' }}

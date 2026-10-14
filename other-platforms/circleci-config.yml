@@ -1,0 +1,92 @@
+# =============================================================================
+# CircleCI 等价配置（对应教程 §4.3）
+# 使用方法：把本文件复制到目标仓库的 .circleci/ 目录，命名为 config.yml
+#
+# 对照学习要点：
+#   jobs 定义“怎么做”、workflows 定义“何时做/做哪些”——两段式
+#   runs-on + setup-node → docker: image cimg/node
+#   矩阵 → job parameters + workflow 级 matrix
+#   缓存 → restore_cache/save_cache 两步，key 用 lockfile checksum（最精确）
+#   制品 → store_artifacts
+#   needs → requires
+#   secrets → Project 环境变量 / Contexts
+# =============================================================================
+version: 2.1
+
+jobs:
+  lint:
+    docker:
+      - image: cimg/node:20
+    steps:
+      - checkout
+      - restore_cache:
+          keys: ['npm-{{ checksum "package-lock.json" }}']
+      - run: npm ci
+      - save_cache:
+          key: npm-{{ checksum "package-lock.json" }}
+          paths: [~/.npm]
+      - run: npm run lint
+
+  test:
+    parameters:
+      node-version:
+        type: string
+    docker:
+      - image: cimg/node:<< parameters.node-version >>
+    steps:
+      - checkout
+      - restore_cache:
+          keys: ['npm-<< parameters.node-version >>-{{ checksum "package-lock.json" }}']
+      - run: npm ci
+      - save_cache:
+          key: npm-<< parameters.node-version >>-{{ checksum "package-lock.json" }}
+          paths: [~/.npm]
+      - run: npm test
+
+  build:
+    docker:
+      - image: cimg/node:20
+    steps:
+      - checkout
+      - restore_cache:
+          keys: ['npm-{{ checksum "package-lock.json" }}']
+      - run: npm ci
+      - run: npm run build
+      - store_artifacts:
+          path: dist
+      # workspace 持久化：让下游 deploy job 通过 attach_workspace 拿到 dist/
+      - persist_to_workspace:
+          root: .
+          paths: [dist]
+
+  deploy-staging:
+    docker:
+      - image: cimg/node:20
+    steps:
+      - checkout
+      # CircleCI 的 job 间文件传递：用 workspace（artifact 只用于存档/下载）
+      - attach_workspace:
+          at: .
+      - run:
+          name: 部署（未配置 DEPLOY_TOKEN 时自动 dry-run）
+          command: |
+            export DEPLOY_TOKEN="${DEPLOY_TOKEN:-ci-dry-run-token}"
+            npm run deploy -- staging
+
+workflows:
+  ci:
+    jobs:
+      - lint:
+          filters: { branches: { only: [main, /pull\/.*/] } }
+      - test:
+          matrix:
+            parameters:
+              node-version: ['20', '22']
+          filters: { branches: { only: [main, /pull\/.*/] } }
+      - build:
+          requires: [lint, test]
+          filters: { branches: { only: [main] } }
+      - deploy-staging:
+          requires: [build]
+          filters: { branches: { only: [main] } }
+          # 生产环境可在此加 hold 步骤实现人工审批：type: approval

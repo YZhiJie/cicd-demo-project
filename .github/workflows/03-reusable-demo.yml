@@ -1,0 +1,22 @@
+# 对应教程练习 L7：可复用工作流的调用方
+# 同一个 reusable workflow 用不同参数调用两次 = 不用复制粘贴就实现了版本矩阵
+name: 03-Reusable-Demo
+
+on:
+  workflow_dispatch: # 手动触发演示；也可改为 push/PR 触发
+  schedule:
+    - cron: '0 22 * * 1-5' # 工作日定时全量回归（UTC 22:00）
+
+permissions:
+  contents: read
+
+jobs:
+  test-node-20:
+    uses: ./.github/workflows/_reusable-test.yml
+    with:
+      node-version: 20
+
+  test-node-22:
+    uses: ./.github/workflows/_reusable-test.yml
+    with:
+      node-version: 22

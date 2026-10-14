@@ -1,0 +1,159 @@
+# =============================================================================
+# Tekton 等价配置（对应教程 §4.4）
+# 使用方法：需要一个已安装 Tekton Pipelines 的 K8s 集群；
+#   kubectl apply -f other-platforms/tekton.yml
+#   tkn pipeline start app-pipeline -w name=source,volumeClaimTemplateFile=pvc.yaml
+# 另需先安装 Hub 上的 git-clone Task：tkn hub install task git-clone
+#
+# 对照学习要点：
+#   没有“CI 服务器”，一切都是 K8s 资源（Task=模板，TaskRun=执行）
+#   step 即容器；needs → runAfter；矩阵无原生（多建几个 PipelineRun）
+#   缓存/制品靠 workspace(PVC)；密钥挂 K8s Secret
+# =============================================================================
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: lint
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: lint
+      image: node:20
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env sh
+        npm ci
+        npm run lint
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: test
+spec:
+  params:
+    - name: node-version
+      type: string
+      default: "20"
+  workspaces:
+    - name: source
+  steps:
+    - name: test
+      image: node:$(params.node-version)
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env sh
+        npm ci
+        npm test
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: build
+      image: node:20
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env sh
+        npm ci
+        npm run build
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy
+spec:
+  params:
+    - name: env
+      type: string
+  workspaces:
+    - name: source
+  stepTemplate:
+    env:
+      # 从 K8s Secret 注入密钥（先创建：kubectl create secret generic deploy-token --from-literal=token=xxx）
+      - name: DEPLOY_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: deploy-token
+            key: token
+            optional: true # 示例集群未建 Secret 时回落到 dry-run
+  steps:
+    - name: deploy
+      image: node:20
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env sh
+        export DEPLOY_TOKEN="${DEPLOY_TOKEN:-ci-dry-run-token}"
+        npm run deploy -- "$(params.env)"
+---
+# Pipeline = 任务编排（对应 GitHub Actions 里 jobs + needs 的 DAG）
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: app-pipeline
+spec:
+  params:
+    - name: env
+      type: string
+      default: staging
+  workspaces:
+    - name: source
+  tasks:
+    - name: fetch-repo
+      taskRef:
+        name: git-clone # 来自 Tekton Hub：tkn hub install task git-clone
+      workspaces:
+        - name: output
+          workspace: source
+    - name: lint
+      taskRef: { name: lint }
+      workspaces:
+        - name: source
+          workspace: source
+      runAfter: [fetch-repo]
+    - name: test
+      taskRef: { name: test }
+      workspaces:
+        - name: source
+          workspace: source
+      runAfter: [fetch-repo]
+    - name: build
+      taskRef: { name: build }
+      workspaces:
+        - name: source
+          workspace: source
+      runAfter: [lint, test]
+    - name: deploy
+      taskRef: { name: deploy }
+      params:
+        - name: env
+          value: $(params.env)
+      workspaces:
+        - name: source
+          workspace: source
+      runAfter: [build]
+---
+# PipelineRun = 一次实际执行（对应 GitHub Actions 里一次 workflow run）
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: app-pipeline-run-
+spec:
+  pipelineRef:
+    name: app-pipeline
+  params:
+    - name: env
+      value: staging
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi

@@ -1,0 +1,75 @@
+# =============================================================================
+# GitLab CI 等价配置（对应教程 §4.1）
+# 使用方法：把本文件复制到目标 GitLab 仓库根目录，重命名为 .gitlab-ci.yml
+# 与 GitHub Actions 的主流水线 02-ci.yml 等价：lint → test(矩阵) → build → deploy
+#
+# 对照学习要点：
+#   on: pull_request/push  → 每个 job 的 rules
+#   runs-on + setup-node   → image: node:20（容器即环境）
+#   strategy.matrix        → parallel: matrix
+#   actions/cache          → cache: 关键字
+#   upload-artifact        → artifacts: 关键字
+#   needs                  → needs（同名，但默认还受 stages 顺序约束）
+#   secrets.*              → Settings → CI/CD → Variables（此处用 $DEPLOY_TOKEN）
+# =============================================================================
+stages: [test, build, deploy]
+
+# 默认配置：所有 job 继承（YAML 锚点，GitLab CI 特有复用方式）
+.default-node:
+  image: node:20
+  cache:
+    key: npm-$CI_COMMIT_REF_SLUG
+    paths:
+      - .npm/
+
+lint:
+  stage: test
+  image: node:20
+  script:
+    - npm ci --cache .npm --prefer-offline
+    - npm run lint
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+test:
+  stage: test
+  image: node:${NODE_VERSION}
+  parallel:
+    matrix:
+      - NODE_VERSION: ["20", "22"]
+  script:
+    - npm ci --cache .npm --prefer-offline
+    - npm test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+build:
+  stage: build
+  image: node:20
+  needs: [lint, test] # DAG：lint/test 全绿才构建
+  script:
+    - npm ci --cache .npm --prefer-offline
+    - npm run build
+  artifacts:
+    paths: [dist/]
+    expire_in: 7 days
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+deploy-staging:
+  stage: deploy
+  image: node:20
+  needs: [build]
+  variables:
+    # 未在 GitLab Settings → CI/CD → Variables 配置时回落演练值（同 GHA 版设计）
+    DEPLOY_TOKEN: $DEPLOY_TOKEN
+  script:
+    - export DEPLOY_TOKEN="${DEPLOY_TOKEN:-ci-dry-run-token}"
+    - npm run deploy -- staging
+  environment:
+    name: staging
+  rules:
+    # CI/CD 分离：只在 main 分支（非 MR）部署
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE == "push"
